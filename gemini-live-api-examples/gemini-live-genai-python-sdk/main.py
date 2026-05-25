@@ -17,8 +17,8 @@ load_dotenv()
 
 # Configure logging - DEBUG for our modules, INFO for everything else
 logging.basicConfig(level=logging.INFO)
-logging.getLogger("gemini_live").setLevel(logging.DEBUG)
-logging.getLogger(__name__).setLevel(logging.DEBUG)
+logging.getLogger("gemini_live").setLevel(logging.INFO)
+logging.getLogger(__name__).setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuration
@@ -28,75 +28,68 @@ TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "+19785715824")
 
-# ============ MOCK BACKEND DATA ============
+# ============ RAG & TOOL HANDLERS ============
 
-VEHICLES = {
-    "default": {
-        "vehicle_number": "GJ05GT0903",
-        "owner_name": "Chetan Seth",
-        "phone": "+919876543210",
-        "model": "Maruti Suzuki Baleno",
-        "year": 2024,
-        "purchase_date": "2024-10-30",
-        "warranty_expiry": "2026-10-30",
-        "warranty_active": True,
-        "current_km_system": 8604,
-        "service_history": [
-            {
-                "service_number": 1,
-                "date": "2025-02-15",
-                "km": 1023,
-                "workshop": "Kataria Automobiles, Ahmedabad",
-                "type": "First Free Service",
-                "cost": 0
-            },
-            {
-                "service_number": 2,
-                "date": "2025-08-20",
-                "km": 5111,
-                "workshop": "Karodhra Workshop",
-                "type": "Second Service",
-                "cost": 2200
-            }
-        ],
-        "next_service": {
-            "service_number": 3,
-            "type": "Third Service",
-            "due_km": 10000,
-            "estimated_cost_min": 2500,
-            "estimated_cost_max": 3000
-        },
-        "pickup_drop_free": True,
-        "address": "B-101, Sterling City , Ahmedabad"
+from rag_pipeline import kb
+
+# In-memory store for qualified leads
+qualified_leads = []
+
+def handle_search_knowledge_base(**kwargs):
+    """Search the SalesBot knowledge base PDF."""
+    query = kwargs.get("query", "")
+    results = kb.search(query, top_k=3)
+    # Format results for the AI to read
+    formatted = []
+    for r in results:
+        if isinstance(r, dict):
+            formatted.append(r["content"])
+        else:
+            formatted.append(str(r))
+    return {
+        "query": query,
+        "results": formatted,
+        "num_results": len(formatted)
     }
-}
 
-def handle_get_vehicle_info(**kwargs):
-    return VEHICLES["default"]
-
-def handle_schedule_pickup(**kwargs):
+def handle_qualify_lead(**kwargs):
+    """Record lead qualification data."""
+    lead = {
+        "company_name": kwargs.get("company_name", "Unknown"),
+        "contact_name": kwargs.get("contact_name", "Unknown"),
+        "use_case": kwargs.get("use_case", "Not specified"),
+        "team_size": kwargs.get("team_size", "Not specified"),
+        "budget_range": kwargs.get("budget_range", "Not discussed"),
+        "timeline": kwargs.get("timeline", "Not specified"),
+        "status": "qualified"
+    }
+    qualified_leads.append(lead)
+    logger.info(f"Lead qualified: {lead}")
     return {
         "success": True,
-        "booking_id": "BK-20260413-001",
-        "vehicle_number": kwargs.get("vehicle_number", "GJ05GT0903"),
-        "pickup_date": kwargs.get("date", "2026-04-13"),
-        "pickup_time": kwargs.get("time", "9:30 AM"),
-        "driver_name": "Rajesh Kumar",
-        "driver_phone": "+919876500001",
-        "pickup_address": kwargs.get("pickup_address", "B-101, Sterling City, Bopal, Ahmedabad"),
-        "workshop": "Kataria Automobiles, S.G. Highway, Ahmedabad",
-        "special_instructions": kwargs.get("special_instructions", ""),
-        "note": "Driver details will be sent via SMS on the morning of pickup."
+        "message": f"Lead for {lead['contact_name']} at {lead['company_name']} has been recorded.",
+        "lead_id": f"LD-{len(qualified_leads):04d}",
+        "details": lead
     }
 
-def handle_get_service_cost_estimate(**kwargs):
-    estimates = {
-        "Third Service": {"min": 2500, "max": 3000, "includes": "Oil change, filter replacement, brake inspection, general checkup"},
-        "Second Service": {"min": 2000, "max": 2500, "includes": "Oil change, filter check, general inspection"},
-        "First Free Service": {"min": 0, "max": 0, "includes": "General inspection, fluid top-up (free under warranty)"},
+def handle_schedule_demo(**kwargs):
+    """Schedule a product demo."""
+    from datetime import datetime
+    demo = {
+        "success": True,
+        "demo_id": f"DEMO-{datetime.now().strftime('%Y%m%d')}-{len(qualified_leads)+1:03d}",
+        "contact_name": kwargs.get("contact_name", ""),
+        "email": kwargs.get("email", ""),
+        "phone": kwargs.get("phone", ""),
+        "preferred_date": kwargs.get("preferred_date", ""),
+        "preferred_time": kwargs.get("preferred_time", ""),
+        "duration": "30 minutes",
+        "meeting_link": "https://meet.quantumbot.in/demo",
+        "host": "Bikash Upadhaya (Product Lead)",
+        "note": "A confirmation email will be sent shortly with the meeting details and calendar invite."
     }
-    service_type = kwargs.get("service_type", "Third Service")
-    return estimates.get(service_type, {"min": 2000, "max": 4000, "includes": "General service"})
+    logger.info(f"Demo scheduled: {demo}")
+    return demo
 
 
 # Live transcript watchers (browser WebSockets watching phone calls)
@@ -133,25 +126,33 @@ async def websocket_endpoint(websocket: WebSocket):
     video_input_queue = asyncio.Queue()
     text_input_queue = asyncio.Queue()
 
+    client_disconnected = False
+
     async def audio_output_callback(data):
-        await websocket.send_bytes(data)
+        if not client_disconnected:
+            try:
+                await websocket.send_bytes(data)
+            except Exception:
+                pass
 
     async def audio_interrupt_callback():
-        # The event queue handles the JSON message, but we might want to do something else here
         pass
 
     gemini_client = GeminiLive(
-        api_key=GEMINI_API_KEY, 
-        model=MODEL, 
+        api_key=GEMINI_API_KEY,
+        model=MODEL,
         input_sample_rate=16000,
         tool_mapping={
-            "get_vehicle_info": handle_get_vehicle_info,
-            "schedule_pickup": handle_schedule_pickup,
-            "get_service_cost_estimate": handle_get_service_cost_estimate,
+            "search_knowledge_base": handle_search_knowledge_base,
+            "qualify_lead": handle_qualify_lead,
+            "schedule_demo": handle_schedule_demo,
         }
     )
 
+    session_task = None
+
     async def receive_from_client():
+        nonlocal client_disconnected
         try:
             while True:
                 message = await websocket.receive()
@@ -175,33 +176,78 @@ async def websocket_endpoint(websocket: WebSocket):
             logger.info("WebSocket disconnected")
         except Exception as e:
             logger.error(f"Error receiving from client: {e}")
+        finally:
+            client_disconnected = True
+            if session_task and not session_task.done():
+                session_task.cancel()
 
     receive_task = asyncio.create_task(receive_from_client())
 
-    async def run_session():
-        async for event in gemini_client.start_session(
-            audio_input_queue=audio_input_queue,
-            video_input_queue=video_input_queue,
-            text_input_queue=text_input_queue,
-            audio_output_callback=audio_output_callback,
-            audio_interrupt_callback=audio_interrupt_callback,
-        ):
-            if event:
-                # Forward events (transcriptions, etc) to client
-                await websocket.send_json(event)
+    MAX_RETRIES = 3
+    RETRY_DELAYS = [2, 4, 8]
+
+    async def run_session_with_retry():
+        for attempt in range(MAX_RETRIES + 1):
+            should_retry = False
+            try:
+                async for event in gemini_client.start_session(
+                    audio_input_queue=audio_input_queue,
+                    video_input_queue=video_input_queue,
+                    text_input_queue=text_input_queue,
+                    audio_output_callback=audio_output_callback,
+                    audio_interrupt_callback=audio_interrupt_callback,
+                ):
+                    if event:
+                        if event.get("type") == "error" and attempt < MAX_RETRIES:
+                            error_msg = event.get("error", "")
+                            if "exhausted" in error_msg or "quota" in error_msg.lower():
+                                delay = RETRY_DELAYS[attempt]
+                                logger.warning(f"Quota error, retrying in {delay}s (attempt {attempt+1}/{MAX_RETRIES})")
+                                try:
+                                    await websocket.send_json({"type": "status", "text": "Reconnecting..."})
+                                except RuntimeError:
+                                    return
+                                await asyncio.sleep(delay)
+                                should_retry = True
+                                break
+                        if event.get("type") == "go_away" and attempt < MAX_RETRIES:
+                            logger.info(f"GoAway received, reconnecting (attempt {attempt+1}/{MAX_RETRIES})")
+                            try:
+                                await websocket.send_json({"type": "status", "text": "Reconnecting..."})
+                            except RuntimeError:
+                                return
+                            await asyncio.sleep(1)
+                            should_retry = True
+                            break
+                        try:
+                            await websocket.send_json(event)
+                        except RuntimeError:
+                            return
+                if not should_retry:
+                    return
+            except Exception as e:
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_DELAYS[attempt]
+                    logger.warning(f"Session error, retrying in {delay}s: {e}")
+                    await asyncio.sleep(delay)
+                else:
+                    raise
 
     try:
-        await run_session()
+        session_task = asyncio.create_task(run_session_with_retry())
+        await session_task
+    except asyncio.CancelledError:
+        logger.info("Gemini session cancelled due to client disconnect")
     except Exception as e:
         import traceback
         logger.error(f"Error in Gemini session: {type(e).__name__}: {e}\n{traceback.format_exc()}")
     finally:
         receive_task.cancel()
-        # Ensure websocket is closed if not already
         try:
             await websocket.close()
         except:
             pass
+        logger.info("connection closed")
 
 
 # ============ TWILIO VOICE ENDPOINTS ============
@@ -236,9 +282,9 @@ async def twilio_media_stream(websocket: WebSocket):
         model=MODEL,
         input_sample_rate=16000,
         tool_mapping={
-            "get_vehicle_info": handle_get_vehicle_info,
-            "schedule_pickup": handle_schedule_pickup,
-            "get_service_cost_estimate": handle_get_service_cost_estimate,
+            "search_knowledge_base": handle_search_knowledge_base,
+            "qualify_lead": handle_qualify_lead,
+            "schedule_demo": handle_schedule_demo,
         }
     )
 
@@ -255,7 +301,7 @@ async def twilio_media_stream(websocket: WebSocket):
     bridge = TwilioMediaBridge(
         websocket=websocket,
         gemini_client=gemini_client,
-        text_trigger="Hi, I have picked up the phone. Please start the call.",
+        text_trigger="A potential customer has connected. Please greet them and ask how you can help with SalesBot.",
         on_event=broadcast_event,
     )
 

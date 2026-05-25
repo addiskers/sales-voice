@@ -1454,6 +1454,34 @@ body::before {
   }
 }
 
+/* ===== KNOWLEDGE BASE RESULTS ===== */
+.kb-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kb-query {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.kb-query strong {
+  color: var(--accent-cyan);
+}
+
+.kb-chunk {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: var(--radius-sm);
+  border-left: 2px solid var(--accent-purple);
+}
+
 /* Extra small phones (iPhone SE, etc.) */
 @media (max-width: 380px) {
   .brand-text {

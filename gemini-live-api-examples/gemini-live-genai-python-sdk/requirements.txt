@@ -5,3 +5,6 @@ websockets
 python-dotenv
 python-multipart
 twilio
+PyPDF2
+scikit-learn
+numpy

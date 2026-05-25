@@ -25,10 +25,10 @@ let currentUserMessageDiv = null;
 // New state
 let callStartTime = null;
 let callTimerInterval = null;
-let currentLanguage = "HI";
-let vehicleData = null;
-let bookingData = null;
-let serviceCostData = null;
+let currentLanguage = "EN";
+let productData = null;
+let leadData = null;
+let demoData = null;
 let audioVisualizerAnimationId = null;
 
 // Call transcript & outcome tracking
@@ -46,7 +46,7 @@ const geminiClient = new GeminiClient({
 
     // Send initial trigger to force agent to start talking
     geminiClient.sendText(
-      `Hi, I have picked up the phone. Please start the call.`
+      `Hi, I'm interested in learning about SalesBot.`
     );
 
     // Auto-start mic
@@ -164,7 +164,7 @@ function initAudioVisualizer() {
       ctx.stroke();
     }
 
-    // Output (Gemini speaking) — frequency bars
+    // Output (Gemini speaking) - frequency bars
     const outputAnalyser = mediaHandler.getOutputAnalyser();
     if (outputAnalyser) {
       const bufferLength = outputAnalyser.frequencyBinCount;
@@ -186,7 +186,7 @@ function initAudioVisualizer() {
       }
     }
 
-    // Input (user speaking) — waveform line
+    // Input (user speaking) - waveform line
     const inputAnalyser = mediaHandler.getInputAnalyser();
     if (inputAnalyser) {
       const bufferLength = inputAnalyser.fftSize;
@@ -217,86 +217,83 @@ function stopAudioVisualizer() {
 }
 
 // --- Tool Call Renderers ---
-function renderVehicleInfoPanel(data) {
-  const el = document.getElementById("vehicle-info-content");
+function renderProductInfoPanel(data) {
+  const el = document.getElementById("product-info-content");
   if (!el || !data) return;
 
-  let html = `<div class="info-grid">
-    <span class="info-label">Owner</span>
-    <span class="info-value">${data.owner_name || "—"}</span>
-    <span class="info-label">Vehicle</span>
-    <span class="info-value">${data.model || "—"} (${data.year || ""})</span>
-    <span class="info-label">Reg. No.</span>
-    <span class="info-value highlight">${data.vehicle_number || "—"}</span>
-    <span class="info-label">KM Reading</span>
-    <span class="info-value">${data.current_km_system ? data.current_km_system.toLocaleString() + " km" : "—"}</span>
-    <span class="info-label">Warranty</span>
-    <span class="info-value ${data.warranty_active ? "success" : "warning"}">${data.warranty_active ? "Active" : "Expired"}${data.warranty_expiry ? " (till " + data.warranty_expiry + ")" : ""}</span>
-  </div>`;
-
-  // Service history timeline
-  if (data.service_history && data.service_history.length > 0) {
-    html += `<div class="service-timeline">
-      <div class="service-timeline-title">Service History</div>`;
-    for (const svc of data.service_history) {
-      html += `<div class="timeline-item">
-        <div class="timeline-dot"></div>
-        <div class="timeline-content">
-          <div class="tl-type">${svc.type}</div>
-          <div class="tl-detail">${svc.date} &middot; ${svc.km ? svc.km.toLocaleString() + " km" : ""} &middot; ${svc.workshop || ""}</div>
-        </div>
-      </div>`;
+  let html = `<div class="kb-results">`;
+  if (data.results && data.results.length > 0) {
+    html += `<div class="kb-query"><strong>Query:</strong> ${escapeHtml(data.query || "")}</div>`;
+    for (const result of data.results) {
+      html += `<div class="kb-chunk">${escapeHtml(result)}</div>`;
     }
-    html += `</div>`;
+  } else {
+    html += `<div class="info-placeholder">No results found</div>`;
   }
-
-  // Next service
-  if (data.next_service) {
-    const ns = data.next_service;
-    html += `<div class="next-service-badge">
-      <div class="ns-title">Next: ${ns.type}</div>
-      <div class="ns-detail">Due at ${ns.due_km ? ns.due_km.toLocaleString() : "—"} km &middot; Est. &#8377;${ns.estimated_cost_min || "?"}–&#8377;${ns.estimated_cost_max || "?"}</div>
-    </div>`;
-  }
-
+  html += `</div>`;
   el.innerHTML = html;
 }
 
-function renderServiceCostPanel(data) {
-  const el = document.getElementById("service-info-content");
+function renderLeadPanel(data) {
+  const el = document.getElementById("lead-info-content");
   if (!el || !data) return;
 
+  const details = data.details || data;
   el.innerHTML = `<div class="info-grid">
-    <span class="info-label">Cost Range</span>
-    <span class="info-value highlight">&#8377;${data.min || "?"} – &#8377;${data.max || "?"}</span>
-    <span class="info-label">Includes</span>
-    <span class="info-value">${data.includes || "—"}</span>
+    <span class="info-label">Lead ID</span>
+    <span class="info-value highlight">${data.lead_id || "-"}</span>
+    <span class="info-label">Contact</span>
+    <span class="info-value">${details.contact_name || "-"}</span>
+    <span class="info-label">Company</span>
+    <span class="info-value">${details.company_name || "-"}</span>
+    <span class="info-label">Use Case</span>
+    <span class="info-value">${details.use_case || "-"}</span>
+    <span class="info-label">Team Size</span>
+    <span class="info-value">${details.team_size || "-"}</span>
+    <span class="info-label">Budget</span>
+    <span class="info-value">${details.budget_range || "-"}</span>
+    <span class="info-label">Timeline</span>
+    <span class="info-value">${details.timeline || "-"}</span>
+    <span class="info-label">Status</span>
+    <span class="info-value success">${details.status || "Qualified"}</span>
   </div>`;
 }
 
-function renderBookingPanel(data) {
-  const panel = document.getElementById("booking-panel");
-  const el = document.getElementById("booking-content");
+function renderDemoPanel(data) {
+  const panel = document.getElementById("demo-panel");
+  const el = document.getElementById("demo-content");
   if (!panel || !el || !data) return;
 
   panel.classList.remove("hidden");
 
   el.innerHTML = `<div class="info-grid">
-    <span class="info-label">Booking ID</span>
-    <span class="info-value highlight">${data.booking_id || "—"}</span>
-    <span class="info-label">Pickup</span>
-    <span class="info-value">${data.pickup_date || "��"} at ${data.pickup_time || "—"}</span>
-    <span class="info-label">Driver</span>
-    <span class="info-value">${data.driver_name || "—"} (${data.driver_phone || ""})</span>
-    <span class="info-label">Workshop</span>
-    <span class="info-value">${data.workshop || "—"}</span>
-    ${data.special_instructions ? `<span class="info-label">Notes</span><span class="info-value">${data.special_instructions}</span>` : ""}
+    <span class="info-label">Demo ID</span>
+    <span class="info-value highlight">${data.demo_id || "-"}</span>
+    <span class="info-label">Contact</span>
+    <span class="info-value">${data.contact_name || "-"}</span>
+    <span class="info-label">Email</span>
+    <span class="info-value">${data.email || "-"}</span>
+    <span class="info-label">Date & Time</span>
+    <span class="info-value">${data.preferred_date || "-"} at ${data.preferred_time || "-"}</span>
+    <span class="info-label">Duration</span>
+    <span class="info-value">${data.duration || "30 minutes"}</span>
+    <span class="info-label">Host</span>
+    <span class="info-value">${data.host || "-"}</span>
+    <span class="info-label">Meeting Link</span>
+    <span class="info-value highlight">${data.meeting_link || "-"}</span>
   </div>`;
 }
 
 // --- Message Handling ---
 function handleJsonMessage(msg) {
-  if (msg.type === "interrupted") {
+  if (msg.type === "status") {
+    const statusMsgDiv = document.createElement("div");
+    statusMsgDiv.className = "message system";
+    statusMsgDiv.innerHTML = `<span class="msg-text" style="color:#f59e0b;font-style:italic;">${escapeHtml(msg.text)}</span>`;
+    chatLog.appendChild(statusMsgDiv);
+    chatLog.scrollTop = chatLog.scrollHeight;
+    return;
+  } else if (msg.type === "interrupted") {
     mediaHandler.stopAudioPlayback();
     currentGeminiMessageDiv = null;
     currentUserMessageDiv = null;
@@ -307,7 +304,6 @@ function handleJsonMessage(msg) {
     if (currentUserMessageDiv) {
       const textEl = currentUserMessageDiv.querySelector(".msg-text");
       if (textEl) textEl.textContent += msg.text;
-      // Append to last transcript entry
       if (callTranscript.length && callTranscript[callTranscript.length - 1].role === "user") {
         callTranscript[callTranscript.length - 1].text += msg.text;
       }
@@ -331,15 +327,15 @@ function handleJsonMessage(msg) {
     detectLanguage(msg.text);
   } else if (msg.type === "tool_call") {
     toolCallsLog.push({ name: msg.name, args: msg.args, result: msg.result });
-    if (msg.name === "get_vehicle_info") {
-      vehicleData = msg.result;
-      renderVehicleInfoPanel(msg.result);
-    } else if (msg.name === "schedule_pickup") {
-      bookingData = msg.result;
-      renderBookingPanel(msg.result);
-    } else if (msg.name === "get_service_cost_estimate") {
-      serviceCostData = msg.result;
-      renderServiceCostPanel(msg.result);
+    if (msg.name === "search_knowledge_base") {
+      productData = msg.result;
+      renderProductInfoPanel(msg.result);
+    } else if (msg.name === "qualify_lead") {
+      leadData = msg.result;
+      renderLeadPanel(msg.result);
+    } else if (msg.name === "schedule_demo") {
+      demoData = msg.result;
+      renderDemoPanel(msg.result);
     }
   }
 }
@@ -391,7 +387,7 @@ if (callMeBtn) {
       });
       const data = await res.json();
       if (data.success) {
-        callMeStatus.textContent = "Calling " + phone + " — pick up your phone! Opening live transcript...";
+        callMeStatus.textContent = "Calling " + phone + " - pick up your phone! Opening live transcript...";
         callMeStatus.className = "call-me-status success";
         // Open live transcript dashboard in new tab
         setTimeout(() => window.open("/live", "_blank"), 1000);
@@ -558,8 +554,8 @@ function showSessionEnd() {
   if (!summaryEl) return;
 
   // Determine call outcome
-  const outcome = bookingData ? "Booking Confirmed" : "No Booking Made";
-  const outcomeClass = bookingData ? "outcome-success" : "outcome-neutral";
+  const outcome = demoData ? "Demo Scheduled" : (leadData ? "Lead Qualified" : "Information Provided");
+  const outcomeClass = demoData ? "outcome-success" : "outcome-neutral";
 
   let html = "";
 
@@ -575,39 +571,30 @@ function showSessionEnd() {
   html += summaryItem("Tool Calls", `${toolCallsLog.length}`);
   html += `</div>`;
 
-  // Vehicle info
-  if (vehicleData) {
+  // Lead info
+  if (leadData) {
+    const details = leadData.details || leadData;
     html += `<div class="summary-section">
-      <div class="summary-section-title">Vehicle</div>`;
-    html += summaryItem("Owner", vehicleData.owner_name);
-    html += summaryItem("Vehicle", `${vehicleData.model} (${vehicleData.year})`);
-    html += summaryItem("Reg. No.", vehicleData.vehicle_number);
-    html += summaryItem("Odometer", `${vehicleData.current_km_system?.toLocaleString()} km`);
-    html += summaryItem("Warranty", vehicleData.warranty_active ? `Active till ${vehicleData.warranty_expiry}` : "Expired");
+      <div class="summary-section-title">Lead Information</div>`;
+    html += summaryItem("Lead ID", leadData.lead_id);
+    html += summaryItem("Contact", details.contact_name);
+    html += summaryItem("Company", details.company_name);
+    html += summaryItem("Use Case", details.use_case);
+    html += summaryItem("Team Size", details.team_size);
+    html += summaryItem("Timeline", details.timeline);
     html += `</div>`;
   }
 
-  // Booking details
-  if (bookingData) {
+  // Demo details
+  if (demoData) {
     html += `<div class="summary-section">
-      <div class="summary-section-title">Booking Details</div>`;
-    html += summaryItem("Booking ID", bookingData.booking_id);
-    html += summaryItem("Pickup Date", bookingData.pickup_date);
-    html += summaryItem("Pickup Time", bookingData.pickup_time);
-    html += summaryItem("Driver", `${bookingData.driver_name} (${bookingData.driver_phone})`);
-    html += summaryItem("Workshop", bookingData.workshop);
-    if (bookingData.special_instructions) {
-      html += summaryItem("Instructions", bookingData.special_instructions);
-    }
-    html += `</div>`;
-  }
-
-  // Service cost
-  if (serviceCostData) {
-    html += `<div class="summary-section">
-      <div class="summary-section-title">Service Estimate</div>`;
-    html += summaryItem("Cost Range", `\u20B9${serviceCostData.min} – \u20B9${serviceCostData.max}`);
-    html += summaryItem("Includes", serviceCostData.includes);
+      <div class="summary-section-title">Demo Details</div>`;
+    html += summaryItem("Demo ID", demoData.demo_id);
+    html += summaryItem("Date", demoData.preferred_date);
+    html += summaryItem("Time", demoData.preferred_time);
+    html += summaryItem("Host", demoData.host);
+    html += summaryItem("Meeting Link", demoData.meeting_link);
+    html += summaryItem("Duration", demoData.duration);
     html += `</div>`;
   }
 
@@ -619,7 +606,7 @@ function showSessionEnd() {
       </button>
       <div class="transcript-full">`;
     for (const entry of callTranscript) {
-      const roleLabel = entry.role === "user" ? "Customer" : "Advisor";
+      const roleLabel = entry.role === "user" ? "You" : "Aria";
       const roleClass = entry.role === "user" ? "tr-user" : "tr-gemini";
       html += `<div class="tr-line ${roleClass}">
         <span class="tr-time">${entry.time}</span>
@@ -634,7 +621,7 @@ function showSessionEnd() {
 }
 
 function summaryItem(label, value) {
-  return `<div class="summary-item"><span class="summary-label">${label}</span><span class="summary-value">${value || "—"}</span></div>`;
+  return `<div class="summary-item"><span class="summary-label">${label}</span><span class="summary-value">${value || "-"}</span></div>`;
 }
 
 function langLabel(code) {
@@ -664,23 +651,23 @@ function resetUI() {
   chatLog.innerHTML = "";
   connectBtn.disabled = false;
   callTimerEl.textContent = "00:00";
-  languageIndicator.textContent = "HI";
-  currentLanguage = "HI";
-  vehicleData = null;
-  bookingData = null;
-  serviceCostData = null;
+  languageIndicator.textContent = "EN";
+  currentLanguage = "EN";
+  productData = null;
+  leadData = null;
+  demoData = null;
   currentGeminiMessageDiv = null;
   currentUserMessageDiv = null;
   callTranscript = [];
   toolCallsLog = [];
 
   // Reset info panels
-  const vic = document.getElementById("vehicle-info-content");
-  if (vic) vic.innerHTML = '<div class="info-placeholder">Waiting for data...</div>';
-  const sic = document.getElementById("service-info-content");
-  if (sic) sic.innerHTML = '<div class="info-placeholder">No service info yet</div>';
-  const bp = document.getElementById("booking-panel");
-  if (bp) bp.classList.add("hidden");
+  const pic = document.getElementById("product-info-content");
+  if (pic) pic.innerHTML = '<div class="info-placeholder">Ask about SalesBot features...</div>';
+  const lic = document.getElementById("lead-info-content");
+  if (lic) lic.innerHTML = '<div class="info-placeholder">No lead info yet</div>';
+  const dp = document.getElementById("demo-panel");
+  if (dp) dp.classList.add("hidden");
 
   // Reset mobile state
   const colRight = document.querySelector(".col-right");
@@ -691,7 +678,7 @@ function resetUI() {
     t.classList.toggle("active", i === 0);
   });
   // Show all panels again (desktop mode)
-  Object.values({ v: "vehicle-info-panel", s: "service-info-panel", b: "booking-panel" }).forEach((id) => {
+  Object.values({ p: "product-info-panel", l: "lead-info-panel", d: "demo-panel" }).forEach((id) => {
     const p = document.getElementById(id);
     if (p) p.style.display = "";
   });
@@ -706,9 +693,9 @@ restartBtn.onclick = () => {
   const tabs = document.querySelectorAll(".mobile-tab");
   const colRight = document.querySelector(".col-right");
   const panelMap = {
-    vehicle: "vehicle-info-panel",
-    service: "service-info-panel",
-    booking: "booking-panel",
+    product: "product-info-panel",
+    lead: "lead-info-panel",
+    demo: "demo-panel",
   };
 
   tabs.forEach((tab) => {
