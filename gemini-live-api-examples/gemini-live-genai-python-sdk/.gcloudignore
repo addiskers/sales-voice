@@ -1,0 +1,12 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.example
+*.md
+.claude/
+node_modules/
+.vscode/
+salesbot_fdd.pdf

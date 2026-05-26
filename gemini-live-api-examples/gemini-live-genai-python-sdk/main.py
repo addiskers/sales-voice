@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import os
+import re
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -30,7 +31,7 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "+19785715824")
 
 # ============ RAG & TOOL HANDLERS ============
 
-from rag_pipeline import kb
+from rag_pipeline import kb, DOCS_DIR
 
 # In-memory store for qualified leads
 qualified_leads = []
@@ -634,6 +635,588 @@ function addTool(name, result) {
     JSON.stringify(result, null, 2).slice(0, 500) + '</pre>';
   transcript.appendChild(div);
 }
+</script>
+</body>
+</html>"""
+
+
+# ============ ADMIN: RAG DOCUMENT MANAGEMENT ============
+
+MAX_UPLOAD_SIZE = 200 * 1024 * 1024  # 200 MB
+
+@app.get("/admin")
+async def admin_dashboard():
+    """Admin dashboard for managing RAG documents."""
+    return HTMLResponse(ADMIN_DASHBOARD_HTML)
+
+
+@app.get("/admin/api/documents")
+async def list_documents():
+    """List all documents in the knowledge base."""
+    docs = kb.get_documents()
+    return {"documents": docs, "total_chunks": len(kb.chunks)}
+
+
+@app.post("/admin/api/upload")
+async def upload_document(request: Request):
+    """Upload a document to the knowledge base (up to 200 MB)."""
+    import shutil
+    from fastapi import UploadFile
+
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        return {"error": "No file provided"}
+
+    filename = file.filename
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in {".pdf", ".txt", ".md"}:
+        return {"error": f"Unsupported file type: {ext}. Only PDF, TXT, MD allowed."}
+
+    # Safe filename
+    safe_name = re.sub(r'[^\w\-.]', '_', filename)
+    dest = os.path.join(DOCS_DIR, safe_name)
+
+    # Check if file already exists
+    if os.path.exists(dest):
+        return {"error": f"File '{safe_name}' already exists. Delete it first to re-upload."}
+
+    # Save file
+    try:
+        contents = await file.read()
+        if len(contents) > MAX_UPLOAD_SIZE:
+            return {"error": f"File too large ({len(contents) / 1024 / 1024:.1f} MB). Max is 200 MB."}
+
+        with open(dest, "wb") as f:
+            f.write(contents)
+
+        # Reload knowledge base
+        kb.reload()
+
+        # Check if the uploaded file produced any chunks
+        chunks_from_file = sum(1 for src in kb.chunk_sources if src == safe_name)
+
+        if chunks_from_file == 0:
+            # Remove the useless file
+            os.remove(dest)
+            kb.reload()
+            return {
+                "success": False,
+                "warning": "No text could be extracted from this file. It may be a scanned/image-based PDF. Only text-based documents are supported.",
+                "filename": safe_name,
+                "deleted": True
+            }
+
+        return {
+            "success": True,
+            "filename": safe_name,
+            "size_mb": round(len(contents) / (1024 * 1024), 2),
+            "chunks_from_file": chunks_from_file,
+            "total_chunks": len(kb.chunks)
+        }
+    except Exception as e:
+        # Clean up on failure
+        if os.path.exists(dest):
+            os.remove(dest)
+        return {"error": str(e)}
+
+
+@app.delete("/admin/api/documents/{filename}")
+async def delete_document(filename: str):
+    """Delete a document from the knowledge base."""
+    filepath = os.path.join(DOCS_DIR, filename)
+
+    if not os.path.exists(filepath):
+        return {"error": f"File '{filename}' not found"}
+
+    # Prevent path traversal
+    if os.path.dirname(os.path.abspath(filepath)) != os.path.abspath(DOCS_DIR):
+        return {"error": "Invalid filename"}
+
+    try:
+        os.remove(filepath)
+        kb.reload()
+        return {
+            "success": True,
+            "deleted": filename,
+            "total_chunks": len(kb.chunks)
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SalesBot Admin - Knowledge Base</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0e17;
+  --card: rgba(17,24,39,0.85);
+  --border: rgba(255,255,255,0.08);
+  --cyan: #00d4ff;
+  --purple: #7c3aed;
+  --green: #10b981;
+  --red: #ef4444;
+  --yellow: #f59e0b;
+  --text: #f1f5f9;
+  --muted: #64748b;
+  --secondary: #94a3b8;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+}
+
+/* Top bar */
+.top-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 28px;
+  background: rgba(10,14,23,0.95);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.brand {
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--cyan);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.brand small {
+  font-weight: 400;
+  opacity: 0.5;
+  font-size: 0.8rem;
+}
+.back-link {
+  color: var(--secondary);
+  text-decoration: none;
+  font-size: 0.8rem;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: all 0.15s;
+}
+.back-link:hover {
+  color: var(--cyan);
+  border-color: rgba(0,212,255,0.3);
+}
+
+/* Container */
+.container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 32px 20px;
+  position: relative;
+  z-index: 1;
+}
+
+/* Stats bar */
+.stats {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+.stat-card {
+  flex: 1;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 20px;
+  backdrop-filter: blur(16px);
+}
+.stat-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--cyan);
+}
+
+/* Upload area */
+.upload-area {
+  background: var(--card);
+  border: 2px dashed rgba(0,212,255,0.2);
+  border-radius: 12px;
+  padding: 40px 20px;
+  text-align: center;
+  margin-bottom: 28px;
+  transition: all 0.2s;
+  cursor: pointer;
+  backdrop-filter: blur(16px);
+}
+.upload-area:hover, .upload-area.dragover {
+  border-color: rgba(0,212,255,0.5);
+  background: rgba(0,212,255,0.03);
+}
+.upload-area svg {
+  color: var(--cyan);
+  opacity: 0.6;
+  margin-bottom: 12px;
+}
+.upload-area h3 {
+  font-size: 0.95rem;
+  margin-bottom: 6px;
+}
+.upload-area p {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.upload-area input[type="file"] {
+  display: none;
+}
+.upload-progress {
+  margin-top: 16px;
+  display: none;
+}
+.progress-bar {
+  height: 4px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--cyan), var(--purple));
+  border-radius: 4px;
+  transition: width 0.3s;
+  width: 0%;
+}
+.upload-status {
+  font-size: 0.75rem;
+  margin-top: 8px;
+  min-height: 1.2em;
+}
+.upload-status.success { color: var(--green); }
+.upload-status.error { color: var(--red); }
+.upload-status.loading { color: var(--cyan); }
+
+/* Documents table */
+.section-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--cyan);
+  margin-bottom: 12px;
+}
+.doc-list {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  backdrop-filter: blur(16px);
+}
+.doc-row {
+  display: flex;
+  align-items: center;
+  padding: 14px 20px;
+  gap: 16px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.15s;
+}
+.doc-row:last-child { border-bottom: none; }
+.doc-row:hover { background: rgba(255,255,255,0.02); }
+
+.doc-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.doc-icon.pdf { background: rgba(239,68,68,0.15); color: var(--red); }
+.doc-icon.txt { background: rgba(16,185,129,0.15); color: var(--green); }
+.doc-icon.md { background: rgba(124,58,237,0.15); color: var(--purple); }
+
+.doc-info { flex: 1; min-width: 0; }
+.doc-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.doc-meta {
+  font-size: 0.7rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.doc-delete {
+  background: rgba(239,68,68,0.1);
+  border: 1px solid rgba(239,68,68,0.2);
+  color: var(--red);
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.doc-delete:hover {
+  background: rgba(239,68,68,0.2);
+  border-color: rgba(239,68,68,0.4);
+}
+.doc-delete:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.empty-state {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 12px 20px;
+  border-radius: 10px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  z-index: 100;
+  animation: slideIn 0.3s ease-out;
+  display: none;
+}
+.toast.success { background: rgba(16,185,129,0.9); color: #fff; }
+.toast.error { background: rgba(239,68,68,0.9); color: #fff; }
+@keyframes slideIn {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@media (max-width: 600px) {
+  .stats { flex-direction: column; gap: 8px; }
+  .stat-card { padding: 12px 16px; }
+  .stat-value { font-size: 1.2rem; }
+  .doc-row { padding: 10px 14px; gap: 10px; }
+  .doc-name { font-size: 0.8rem; }
+  .doc-delete { padding: 5px 10px; font-size: 0.7rem; }
+}
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <div class="brand">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+    Knowledge Base <small>Admin</small>
+  </div>
+  <a href="/" class="back-link">Back to SalesBot</a>
+</div>
+
+<div class="container">
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-label">Documents</div>
+      <div class="stat-value" id="docCount">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Indexed Chunks</div>
+      <div class="stat-value" id="chunkCount">-</div>
+    </div>
+  </div>
+
+  <!-- Upload -->
+  <div class="upload-area" id="uploadArea">
+    <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+      <polyline points="17 8 12 3 7 8"/>
+      <line x1="12" y1="3" x2="12" y2="15"/>
+    </svg>
+    <h3>Upload Document</h3>
+    <p>Drag & drop or click to upload. PDF, TXT, MD up to 200 MB.</p>
+    <input type="file" id="fileInput" accept=".pdf,.txt,.md" />
+    <div class="upload-progress" id="uploadProgress">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="upload-status" id="uploadStatus"></div>
+    </div>
+  </div>
+
+  <!-- Documents -->
+  <div class="section-title">Documents</div>
+  <div class="doc-list" id="docList">
+    <div class="empty-state">Loading...</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const docList = document.getElementById('docList');
+const docCount = document.getElementById('docCount');
+const chunkCount = document.getElementById('chunkCount');
+const uploadArea = document.getElementById('uploadArea');
+const fileInput = document.getElementById('fileInput');
+const uploadProgress = document.getElementById('uploadProgress');
+const progressFill = document.getElementById('progressFill');
+const uploadStatus = document.getElementById('uploadStatus');
+const toast = document.getElementById('toast');
+
+// Load documents
+async function loadDocs() {
+  try {
+    const res = await fetch('/admin/api/documents');
+    const data = await res.json();
+    docCount.textContent = data.documents.length;
+    chunkCount.textContent = data.total_chunks;
+    renderDocs(data.documents);
+  } catch (e) {
+    docList.innerHTML = '<div class="empty-state">Failed to load documents</div>';
+  }
+}
+
+function renderDocs(docs) {
+  if (!docs.length) {
+    docList.innerHTML = '<div class="empty-state">No documents uploaded yet. Upload your first document above.</div>';
+    return;
+  }
+  docList.innerHTML = docs.map(d => `
+    <div class="doc-row">
+      <div class="doc-icon ${d.type.toLowerCase()}">${d.type}</div>
+      <div class="doc-info">
+        <div class="doc-name">${escapeHtml(d.filename)}</div>
+        <div class="doc-meta">${d.size_mb} MB</div>
+      </div>
+      <button class="doc-delete" onclick="deleteDoc('${escapeHtml(d.filename)}', this)">Delete</button>
+    </div>
+  `).join('');
+}
+
+// Upload
+uploadArea.addEventListener('click', () => fileInput.click());
+uploadArea.addEventListener('dragover', (e) => { e.preventDefault(); uploadArea.classList.add('dragover'); });
+uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+uploadArea.addEventListener('drop', (e) => {
+  e.preventDefault();
+  uploadArea.classList.remove('dragover');
+  if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files.length) uploadFile(fileInput.files[0]);
+});
+
+async function uploadFile(file) {
+  const maxSize = 200 * 1024 * 1024;
+  if (file.size > maxSize) {
+    showToast('File too large. Max 200 MB.', 'error');
+    return;
+  }
+
+  uploadProgress.style.display = 'block';
+  progressFill.style.width = '30%';
+  uploadStatus.textContent = 'Uploading ' + file.name + '...';
+  uploadStatus.className = 'upload-status loading';
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    progressFill.style.width = '60%';
+    const res = await fetch('/admin/api/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    progressFill.style.width = '100%';
+
+    if (data.success) {
+      uploadStatus.textContent = 'Uploaded! ' + data.chunks_from_file + ' chunks indexed.';
+      uploadStatus.className = 'upload-status success';
+      showToast(file.name + ' uploaded successfully (' + data.chunks_from_file + ' chunks)', 'success');
+      loadDocs();
+    } else if (data.warning) {
+      uploadStatus.textContent = data.warning;
+      uploadStatus.className = 'upload-status error';
+      showToast(data.warning, 'error');
+    } else {
+      uploadStatus.textContent = data.error;
+      uploadStatus.className = 'upload-status error';
+      showToast(data.error, 'error');
+    }
+  } catch (e) {
+    uploadStatus.textContent = 'Upload failed: ' + e.message;
+    uploadStatus.className = 'upload-status error';
+  }
+
+  fileInput.value = '';
+  setTimeout(() => { uploadProgress.style.display = 'none'; progressFill.style.width = '0%'; }, 3000);
+}
+
+// Delete
+async function deleteDoc(filename, btn) {
+  if (!confirm('Delete "' + filename + '"? The knowledge base will be re-indexed.')) return;
+  btn.disabled = true;
+  btn.textContent = 'Deleting...';
+
+  try {
+    const res = await fetch('/admin/api/documents/' + encodeURIComponent(filename), { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(filename + ' deleted', 'success');
+      loadDocs();
+    } else {
+      showToast(data.error, 'error');
+      btn.disabled = false;
+      btn.textContent = 'Delete';
+    }
+  } catch (e) {
+    showToast('Delete failed', 'error');
+    btn.disabled = false;
+    btn.textContent = 'Delete';
+  }
+}
+
+function showToast(msg, type) {
+  toast.textContent = msg;
+  toast.className = 'toast ' + type;
+  toast.style.display = 'block';
+  setTimeout(() => { toast.style.display = 'none'; }, 3000);
+}
+
+function escapeHtml(t) {
+  const d = document.createElement('div');
+  d.textContent = t;
+  return d.innerHTML;
+}
+
+loadDocs();
 </script>
 </body>
 </html>"""
